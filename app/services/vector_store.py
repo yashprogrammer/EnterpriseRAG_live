@@ -56,3 +56,46 @@ def search(query_embedding: list[float], top_k: int = 5) -> list[RetrievedChunk]
         )
         for p in results
     ]
+
+
+def _build_sparse_index():
+    from app.services.sparse_vector_service import SparseVectorIndex
+    client = get_client()
+    all_points, _next_page = client.scroll(
+        collection_name=settings.qdrant_collection,
+        limit=10000,
+        with_payload=True,
+        with_vectors=False,
+    )
+    documents = [
+        {
+            "text": point.payload.get("text", "") if point.payload else "",
+            "source": point.payload.get("source", "") if point.payload else "",
+            "id": str(point.id),
+        }
+        for point in all_points
+    ]
+    sparse_index = SparseVectorIndex()
+    sparse_index.fit(documents)
+    return sparse_index
+
+def sparse_search(query_text: str, top_k: int = 5) -> list[RetrievedChunk]:
+    """Pure sparse search using TF-IDF (no dense embeddings, no fusion)."""
+    sparse_index = _build_sparse_index()
+    return sparse_index.search(query_text, top_k=top_k)
+
+
+def hybrid_search(
+    query_embedding: list[float],
+    query_text: str,
+    top_k: int = 5,
+    rrf_k: int = 60,
+    sparse_top_k: int = 20,
+) -> list[RetrievedChunk]:
+
+    from app.services.sparse_vector_service import fuse_rrf
+    dense_results = search(query_embedding, top_k=sparse_top_k)
+    sparse_index = _build_sparse_index()
+    sparse_results = sparse_index.search(query_text, top_k=sparse_top_k)
+    fused = fuse_rrf([dense_results, sparse_results], rrf_k=rrf_k)
+    return fused[:top_k]
