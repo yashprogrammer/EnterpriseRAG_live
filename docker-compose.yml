@@ -1,0 +1,61 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: adv_rag
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+  
+  qdrant:
+    image: qdrant/qdrant:v1.17.0
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+  
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    working_dir: /app
+    environment:
+      - PYTHONPATH=/app
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/adv_rag
+      - QDRANT_URL=http://qdrant:6333
+      - UPSTASH_REDIS_URL=${UPSTASH_REDIS_URL}
+      - UPSTASH_REDIS_TOKEN=${UPSTASH_REDIS_TOKEN}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+      - LOG_JSON=false
+      - LOG_LEVEL=INFO
+      # Self-RAG / reflection tuning (overridable via host .env)
+      - REFLECTION_MIN_SCORE=${REFLECTION_MIN_SCORE:-0.85}
+      - MAX_REFLECTION_RETRIES=${MAX_REFLECTION_RETRIES:-2}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    volumes:
+      - ./app:/app/app
+      - ./scripts:/app/scripts
+      - ./seed:/app/seed
+    command: ["python", "scripts/serve.py"]
+
+
+volumes:
+  postgres_data:
+  qdrant_data:

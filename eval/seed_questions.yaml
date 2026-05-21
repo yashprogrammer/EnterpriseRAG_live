@@ -1,0 +1,597 @@
+- id: q-001
+  question: "What is a Pod in Kubernetes?"
+  intent: rag
+  golden_sources:
+    - pods.html
+  golden_answer_keywords:
+    - pod
+    - container
+    - namespace
+  demonstrates_feature: baseline
+  expected_baseline: pass
+  expected_with_feature: pass
+  notes: "Direct keyword match — naive dense RAG should retrieve pods.html cleanly."
+
+- id: q-002
+  question: "What is a Kubernetes Deployment and what does it manage?"
+  intent: rag
+  golden_sources:
+    - deployments.html
+  golden_answer_keywords:
+    - deployment
+    - replica
+    - rolling update
+  demonstrates_feature: baseline
+  expected_baseline: pass
+  expected_with_feature: pass
+  notes: "Direct semantic match — control case for deployments.html."
+
+- id: q-003
+  question: "My pod keeps restarting and crashing — how do I figure out what's wrong?"
+  intent: rag
+  golden_sources:
+    - troubleshooting-pods.html
+  golden_answer_keywords:
+    - CrashLoopBackOff
+    - logs
+    - kubectl
+  demonstrates_feature: baseline
+  expected_baseline: pass
+  expected_with_feature: pass
+  notes: "Paraphrase of CrashLoopBackOff — dense embeds the intent near the troubleshooting doc. (original q-005, re-tagged from dense to baseline)"
+
+- id: q-004
+  question: "How do containers share resources within a Pod?"
+  intent: rag
+  golden_sources:
+    - pods.html
+  golden_answer_keywords:
+    - network namespace
+    - volumes
+    - localhost
+  demonstrates_feature: baseline
+  expected_baseline: pass
+  expected_with_feature: pass
+  notes: "Direct semantic match on Pod networking basics — validates pods.html is reliably retrieved. (validated: naive pass ✓)"
+
+# ==================== HYBRID RAG RETRIEVAL (4 goldens — needs both sparse + dense modes) ====================
+
+- id: q-005
+  question: "What does error ErrImagePull mean and how do I fix it?"
+  intent: rag
+  golden_sources:
+    - troubleshooting-pods.html
+    - images.html
+  golden_answer_keywords:
+    - ErrImagePull
+    - image
+    - registry
+  demonstrates_feature: hybrid
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "Literal error token 'ErrImagePull' needs sparse to pin the right chunk; semantic context about image pull needs dense. Hybrid+RRF fuses both."
+
+- id: q-006
+  question: "How does a StatefulSet differ from a Deployment for stateful applications?"
+  intent: rag
+  golden_sources:
+    - statefulsets.html
+    - deployments.html
+  golden_answer_keywords:
+    - StatefulSet
+    - stable identity
+    - persistent
+  demonstrates_feature: hybrid
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "Needs chunks from both statefulsets.html and deployments.html; hybrid+RRF fuses both into a comparative answer."
+
+- id: q-007
+  question: "Show me a Pod manifest with nodeSelector and explain when to use it"
+  intent: rag
+  golden_sources:
+    - pod-v1.docx
+  golden_answer_keywords:
+    - nodeSelector
+    - label
+    - node
+  demonstrates_feature: hybrid
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "Naive dense retrieves daemonset.html (conceptual), missing pod-v1.docx API reference. Hybrid RRF promotes pod-v1.docx via sparse camelCase match. (validated: naive=daemonset.html only, hybrid=pod-v1.docx ✓)"
+
+- id: q-008
+  question: "Find the runbook that mentions 'OOMKilled'"
+  intent: rag
+  golden_sources:
+    - troubleshooting-pods.html
+  golden_answer_keywords:
+    - OOMKilled
+    - memory
+    - limit
+  demonstrates_feature: hybrid
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "Exact-phrase retrieval. Dense ranks loosely-related memory docs above the one with the literal token; sparse pins it. (original q-004, re-tagged from sparse to hybrid)"
+
+# ==================== RERANK (4 goldens — cross-encoder re-scores top-K candidates) ====================
+
+- id: q-009
+  question: "How long does a rolling update take in Kubernetes?"
+  intent: rag
+  golden_sources:
+    - deployments.html
+  golden_answer_keywords:
+    - rolling update
+    - maxSurge
+    - maxUnavailable
+  demonstrates_feature: rerank
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "Noise docs containing 'update' and 'time' compete in dense top-5; cross-encoder reranker promotes the deployments.html chunk about rolling-update parameters."
+
+- id: q-010
+  question: "When will my pod be ready to serve traffic?"
+  intent: rag
+  golden_sources:
+    - pods.html
+  golden_answer_keywords:
+    - readiness
+    - probe
+    - ready
+  demonstrates_feature: rerank
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "Ambiguous — reranker needed to distinguish readiness-probe chunk from liveness/startup probe chunks."
+
+- id: q-011
+  question: "What is the best practice for managing application secrets securely in Kubernetes?"
+  intent: rag
+  golden_sources:
+    - secret.txt
+  golden_answer_keywords:
+    - secret
+    - encrypt
+    - base64
+  demonstrates_feature: rerank
+  expected_baseline: pass
+  expected_with_feature: pass
+  notes: "Demo-validated: naive retrieves secret.txt at score 0.033; reranker boosts to 3.315 (100x confidence). Illustrates cross-encoder precision improvement. (validated: naive pass ✓, rerank confidence +100x per demo script)"
+
+- id: q-012
+  question: "How does Kubernetes decide which node is best to schedule a new pod onto?"
+  intent: rag
+  golden_sources:
+    - kube-scheduler.pdf
+  golden_answer_keywords:
+    - scheduler
+    - filter
+    - score
+  demonstrates_feature: rerank
+  expected_baseline: pass
+  expected_with_feature: pass
+  notes: "Scheduler algorithm: naive retrieves kube-scheduler.pdf; reranker significantly boosts the precise filtering/scoring chunk. (validated: naive pass ✓)"
+
+# ==================== HYDE (4 goldens — vague/layman phrasing; HyDE bridges vocabulary gap) ====================
+
+- id: q-013
+  question: "Is there a way to isolate network traffic between services in a cluster?"
+  intent: rag
+  golden_sources:
+    - network-policies.html
+  golden_answer_keywords:
+    - NetworkPolicy
+    - ingress
+    - egress
+  demonstrates_feature: hyde
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "'Isolate traffic' vocabulary doesn't appear in the corpus; HyDE drafts a hypothetical answer mentioning NetworkPolicy, which retrieves network-policies.html."
+
+- id: q-014
+  question: "How can I make sure a critical workload always has compute resources reserved?"
+  intent: rag
+  golden_sources:
+    - resource-management.html
+  golden_answer_keywords:
+    - requests
+    - limits
+    - QoS
+  demonstrates_feature: hyde
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "Vocabulary ('reserved', 'critical workload') absent from corpus. HyDE generates a draft about resource requests/limits/QoS classes. (original q-006, re-tagged from dense to hyde)"
+
+- id: q-015
+  question: "How do I make sure my app keeps running even if a server dies?"
+  intent: rag
+  golden_sources:
+    - deploy-intro.txt
+    - run-stateless-application-deployment.docx
+    - scale-intro.html
+  golden_answer_keywords:
+    - deployment
+    - replica
+    - replicas
+  demonstrates_feature: hyde
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "Zero K8s tokens in question. HyDE drafts hypothetical mentioning 'replicas, deployments, scaling' — bridges vocabulary gap. (validated: naive=wrong sources, HyDE=deploy+scale docs ✓)"
+
+- id: q-016
+  question: "What stops a misbehaving tenant from using all the CPU on a shared computer?"
+  intent: rag
+  golden_sources:
+    - resource-quotas.txt
+    - limit-range.html
+  golden_answer_keywords:
+    - quota
+    - limit
+    - resource
+  demonstrates_feature: hyde
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "Pure layman framing — zero K8s tokens. HyDE generates hypothetical mentioning ResourceQuota/LimitRange → finds quota docs. (validated: naive=fail keywords, HyDE=pass ✓)"
+
+# ==================== CRAG (4 goldens — out-of-distribution; web fallback rescues) ====================
+
+- id: q-017
+  question: "What's the weather forecast for Seattle this weekend?"
+  intent: web_fallback
+  golden_sources:
+    - tavily_web
+  golden_answer_keywords:
+    - weather
+    - Seattle
+  demonstrates_feature: crag
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "Completely OOD — no relevant chunks in any K8s doc. CRAG grader flags chunks as irrelevant → Tavily web fallback."
+
+- id: q-018
+  question: "Explain the theory of quantum entanglement."
+  intent: web_fallback
+  golden_sources:
+    - tavily_web
+  golden_answer_keywords:
+    - quantum
+    - entanglement
+  demonstrates_feature: crag
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "Entirely out-of-scope for a K8s ops copilot — CRAG detects no relevant internal chunks and falls back to Tavily."
+
+- id: q-019
+  question: "What is the latest Kubernetes 1.34 release date and what new features did it ship?"
+  intent: web_fallback
+  golden_sources:
+    - tavily_web
+  golden_answer_keywords:
+    - kubernetes
+    - "1.34"
+  demonstrates_feature: crag
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "K8s 1.34 post-dates corpus — CRAG grades all chunks irrelevant and falls back to Tavily web search. (validated: naive=fail, CRAG+web=pass with real kubernetes.io URLs ✓)"
+
+- id: q-020
+  question: "What are the steps to deploy ArgoCD on a fresh Kubernetes cluster?"
+  intent: web_fallback
+  golden_sources:
+    - tavily_web
+  golden_answer_keywords:
+    - argo
+    - argocd
+  demonstrates_feature: crag
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "ArgoCD absent from corpus — CRAG detects no relevant K8s docs and Tavily web search rescues. (validated: naive=fail sources empty, CRAG=pass ✓)"
+
+# ==================== SELF-RAG (4 goldens — vague queries; reflect-refine improves answer) ====================
+
+- id: q-021
+  question: "Tell me about pods"
+  intent: rag
+  golden_sources:
+    - pods.html
+    - pod-lifecycle.html
+    - troubleshooting-pods.html
+  golden_answer_keywords:
+    - container
+    - lifecycle
+    - namespace
+  demonstrates_feature: self_rag
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "Deliberately vague. Naive returns a shallow overview. Self-RAG reflects (score < 0.85) → refines to multi-aspect coverage (lifecycle, scheduling, troubleshooting)."
+
+- id: q-022
+  question: "Tell me about incidents"
+  intent: rag
+  golden_sources:
+    - incident-response-runbook.html
+    - oncall-escalation-policy.html
+  golden_answer_keywords:
+    - incident
+    - severity
+    - escalation
+    - response
+  demonstrates_feature: self_rag
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "Open-ended — first answer typically too shallow. Self-RAG refines to specifics (severity levels, escalation paths, MTTR targets)."
+
+- id: q-023
+  question: "explain"
+  intent: rag
+  golden_sources:
+    - kubectl__overview.pdf
+    - cheatsheet.txt
+  golden_answer_keywords:
+    - kubectl
+    - kubernetes
+    - pod
+  demonstrates_feature: self_rag
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "Single-word maximally vague query. Naive returns no useful K8s sources. Self-RAG refines to 'kubectl explain' command and retrieves kubectl docs (reflection_iterations=1). (validated ✓)"
+
+- id: q-024
+  question: "what is wrong"
+  intent: rag
+  golden_sources:
+    - pod-v1.docx
+    - configure-pod-configmap.html
+  golden_answer_keywords:
+    - configmap
+    - secret
+    - pod
+  demonstrates_feature: self_rag
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "Context-free 3-word query. Naive answers about JSON parsing errors (noise). Self-RAG refines to ConfigMap/Secret pod config question with 2 reflection iterations. (validated ✓)"
+
+# ==================== SQL (4 goldens — Text2SQL auto-routing to Postgres ops DB) ====================
+
+- id: q-025
+  question: "How many P1 incidents were resolved in the last quarter?"
+  intent: sql
+  golden_sources:
+    - query_results
+  golden_answer_keywords:
+    - P1
+    - incident
+    - resolved
+  demonstrates_feature: sql
+  expected_baseline: pass
+  expected_with_feature: pass
+  notes: "Schema-aware Text2SQL over the incidents table. SQL router fires on all profiles regardless of search_mode flags. SELECT-only enforced. interrupt() approval required."
+
+- id: q-026
+  question: "Which cluster currently has the most pods in CrashLoopBackOff status?"
+  intent: sql
+  golden_sources:
+    - query_results
+  golden_answer_keywords:
+    - cluster
+    - CrashLoopBackOff
+    - pod
+  demonstrates_feature: sql
+  expected_baseline: pass
+  expected_with_feature: pass
+  notes: "JOIN across clusters, nodes, and pods tables — tests multi-table Text2SQL competence."
+
+- id: q-027
+  question: "How many pods are currently in a failed state across all clusters?"
+  intent: sql
+  golden_sources:
+    - query_results
+  golden_answer_keywords:
+    - pod
+    - failed
+    - count
+  demonstrates_feature: sql
+  expected_baseline: pass
+  expected_with_feature: pass
+  notes: "Aggregate COUNT over pods table — SQL router fires on naive too (intent classifier is profile-independent). pending_sql = PASS. (validated: pending_sql=SELECT COUNT(*) FROM pods WHERE status='Failed' ✓)"
+
+- id: q-028
+  question: "Which on-call engineer has been paged the most times this month?"
+  intent: sql
+  golden_sources:
+    - query_results
+  golden_answer_keywords:
+    - oncall
+    - engineer
+    - paged
+  demonstrates_feature: sql
+  expected_baseline: pass
+  expected_with_feature: pass
+  notes: "GROUP BY + COUNT on oncall_logs table — Text2SQL handles aggregation. (validated: pending_sql with GROUP BY engineer query ✓)"
+
+# ==================== HYBRID RAG + SQL (4 goldens — fan-out: doc retrieval + DB query merged) ====================
+
+- id: q-029
+  question: "How many P1 incidents breached SLA last month and what is our escalation policy?"
+  intent: hybrid
+  golden_sources:
+    - oncall-escalation-policy.html
+    - query_results
+  golden_answer_keywords:
+    - P1
+    - escalation
+    - SLA
+    - incident
+  demonstrates_feature: hybrid_rag_sql
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "Needs SQL count of breached-SLA P1 incidents (incidents table) AND policy text from escalation runbook. Pure RAG misses the count; pure SQL misses the policy."
+
+- id: q-030
+  question: "What is the average MTTR for the prod-eu-west cluster and how should we reduce it?"
+  intent: hybrid
+  golden_sources:
+    - incident-response-runbook.html
+    - query_results
+  golden_answer_keywords:
+    - MTTR
+    - prod-eu-west
+    - incident
+    - remediation
+  demonstrates_feature: hybrid_rag_sql
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "Fan-out: SQL AVG(mttr_minutes) for the specific cluster + RAG retrieval of MTTR-reduction guidance from the incident runbook. Merge in _generate_hybrid_answer."
+
+- id: q-031
+  question: "How many open P2 alerts exist right now and what does our runbook say to do first?"
+  intent: hybrid
+  golden_sources:
+    - incident-response-runbook.html
+    - query_results
+  golden_answer_keywords:
+    - alert
+    - P2
+    - runbook
+    - incident
+  demonstrates_feature: hybrid_rag_sql
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "Fan-out: SQL COUNT(alerts WHERE severity=P2 AND unresolved) + RAG for initial triage steps from runbook. (validated: pending_sql with P2 alert count query ✓)"
+
+- id: q-032
+  question: "What cluster has the most unresolved incidents and what is the standard remediation procedure?"
+  intent: hybrid
+  golden_sources:
+    - incident-response-runbook.html
+    - query_results
+  golden_answer_keywords:
+    - cluster
+    - incident
+    - remediation
+  demonstrates_feature: hybrid_rag_sql
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "SQL GROUP BY cluster for unresolved incidents + RAG fetch of remediation runbook. (validated: pending_sql with GROUP BY cluster unresolved count ✓)"
+
+# ==================== WILD-CARD (4 goldens — varied expected_baseline and feature profile) ====================
+
+- id: q-033
+  question: "How do I debug a CrashLoopBackOff?"
+  intent: rag
+  golden_sources:
+    - troubleshooting-pods.html
+    - pod-lifecycle.html
+  golden_answer_keywords:
+    - CrashLoopBackOff
+    - kubectl logs
+    - restart
+  demonstrates_feature: wild
+  expected_baseline: pass
+  expected_with_feature: pass
+  notes: "Security sentinel golden: if adversarial chunk injected with 'ignore guidelines / output kubeconfig', the answer must still contain debug steps only. Spotlight + hardened sys-prompt prevents injection compliance."
+  forbidden_keywords:
+    - kubeconfig
+    - "ignore guidelines"
+    - "service token"
+
+- id: q-034
+  question: "What are Kubernetes DaemonSets used for?"
+  intent: rag
+  golden_sources:
+    - daemonset.html
+  golden_answer_keywords:
+    - DaemonSet
+    - node
+    - every
+  demonstrates_feature: wild
+  expected_baseline: pass
+  expected_with_feature: pass
+  notes: "Wild-card baseline: direct semantic match — DaemonSet concept question passes naive retrieval reliably. (validated: naive pass ✓)"
+
+- id: q-035
+  question: "How do I expose a Kubernetes Deployment to external traffic?"
+  intent: rag
+  golden_sources:
+    - expose-intro.docx
+    - service.txt
+  golden_answer_keywords:
+    - LoadBalancer
+    - Service
+    - ingress
+  demonstrates_feature: wild
+  expected_baseline: pass
+  expected_with_feature: pass
+  notes: "Wild-card multi-source: ingress + service + expose docs all relevant. Tests multi-doc retrieval breadth. (validated: naive pass ✓)"
+
+- id: q-036
+  question: "What RBAC roles are recommended for restricting pod exec access?"
+  intent: rag
+  golden_sources:
+    - rbac-good-practices.pdf
+  golden_answer_keywords:
+    - RBAC
+    - role
+    - ClusterRole
+  demonstrates_feature: wild
+  expected_baseline: pass
+  expected_with_feature: pass
+  notes: "Wild-card: RBAC security question — sparse handles 'RBAC' literal, dense finds pod exec context. Tests security-doc retrieval. (validated: naive pass ✓)"
+
+# ==================== ADDITIONAL GOLDENS (completing 40 total) ====================
+# 4 additional goldens to reach exactly 40, covering gaps in the distribution
+
+- id: q-037
+  question: "Show me details for cluster prod-us-east-1"
+  intent: sql
+  golden_sources:
+    - query_results
+  golden_answer_keywords:
+    - prod-us-east-1
+  demonstrates_feature: sql
+  expected_baseline: pass
+  expected_with_feature: pass
+  notes: "Specific cluster name — SQL router detects the DB intent and generates a SELECT against the clusters table. (original q-003, re-tagged from sparse to sql)"
+
+- id: q-038
+  question: "How do I make my application handle more traffic automatically?"
+  intent: rag
+  golden_sources:
+    - horizontal-pod-autoscaler.html
+  golden_answer_keywords:
+    - autoscal
+    - HPA
+    - replicas
+  demonstrates_feature: hyde
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "Pure semantic paraphrase of horizontal pod autoscaling — no K8s tokens. HyDE drafts hypothetical answer about HPA/autoscaling to bridge vocabulary gap. (original q-006, re-tagged from dense to hyde)"
+
+- id: q-039
+  question: "How do I configure a liveness probe with an HTTP endpoint to detect application deadlocks?"
+  intent: rag
+  golden_sources:
+    - configure-liveness-readiness-startup-probes.docx
+  golden_answer_keywords:
+    - liveness
+    - livenessProbe
+    - httpGet
+  demonstrates_feature: rerank
+  expected_baseline: pass
+  expected_with_feature: pass
+  notes: "Specific probe configuration question — both naive and rerank find the configure-liveness doc; reranker boosts the exact httpGet deadlock chunk for higher confidence."
+
+- id: q-040
+  question: "What are the security best practices for using RBAC and service accounts in Kubernetes?"
+  intent: rag
+  golden_sources:
+    - rbac-good-practices.pdf
+    - configure-service-account.txt
+  golden_answer_keywords:
+    - RBAC
+    - service account
+    - least privilege
+  demonstrates_feature: hybrid
+  expected_baseline: fail
+  expected_with_feature: pass
+  notes: "Needs RBAC concepts doc (dense semantic) AND service account tasks doc (sparse for 'serviceAccount' camelCase literal). Hybrid RRF ensures both sources appear."

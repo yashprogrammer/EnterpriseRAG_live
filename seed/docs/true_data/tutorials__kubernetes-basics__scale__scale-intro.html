@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Tutorials › Kubernetes-Basics › Scale › Scale-Intro</title>
+</head>
+<body>
+  <h1>Tutorials › Kubernetes-Basics › Scale › Scale-Intro</h1>
+  <p>Running Multiple Instances of Your App | Kubernetes<br/>
+Running Multiple Instances of Your AppObjectivesScale an existing app manually using kubectl.Before you beginThe shell commands in this tutorial use POSIX shell syntax, which is supported by<br/>
+the default shells on most Linux and macOS systems (for example, bash, zsh, or sh).<br/>
+Windows users must use a POSIX-compatible shell such as<br/>
+Windows Subsystem for Linux (WSL)<br/>
+or Git Bash to run the commands as written.<br/>
+Commands that use export, $(), and similar constructs are not compatible<br/>
+with PowerShell or the Windows Command Prompt.Scaling an applicationYou can create from the start a Deployment with multiple instances using the --replicas<br/>
+parameter for the kubectl create deployment command.Previously we created a Deployment,<br/>
+and then exposed it publicly via a Service.<br/>
+The Deployment created only one Pod for running our application. When traffic increases,<br/>
+we will need to scale the application to keep up with user demand.If you haven't worked through the earlier sections, start from<br/>
+Using minikube to create a cluster.Scaling is accomplished by changing the number of replicas in a Deployment.Note:If you are trying this after the<br/>
+previous section, then you<br/>
+may have deleted the service you created, or have created a Service of type: NodePort.<br/>
+In this section, it is assumed that a service with type: LoadBalancer is created<br/>
+for the kubernetes-bootcamp Deployment.If you have not deleted the Service created in<br/>
+the previous section,<br/>
+first delete that Service and then run the following command to create a new Service<br/>
+with its type set to LoadBalancer:kubectl expose deployment/kubernetes-bootcamp --type="LoadBalancer" --port 8080<br/>
+Scaling overviewScaling is accomplished by changing the number of replicas in a Deployment.Scaling out a Deployment will ensure new Pods are created and scheduled to Nodes<br/>
+with available resources. Scaling will increase the number of Pods to the new desired<br/>
+state. Kubernetes also supports autoscaling<br/>
+of Pods, but it is outside of the scope of this tutorial. Scaling to zero is also<br/>
+possible, and it will terminate all Pods of the specified Deployment.Running multiple instances of an application will require a way to distribute the<br/>
+traffic to all of them. Services have an integrated load-balancer that will distribute<br/>
+network traffic to all Pods of an exposed Deployment. Services will monitor continuously<br/>
+the running Pods using endpoints, to ensure the traffic is sent only to available Pods.Once you have multiple instances of an application running, you would be able to<br/>
+do Rolling updates without downtime. We'll cover that in the next section of the<br/>
+tutorial. Now, let's go to the terminal and scale our application.Scaling a DeploymentTo list your Deployments, use the get deployments subcommand:kubectl get deployments<br/>
+The output should be similar to:NAME                  READY   UP-TO-DATE   AVAILABLE   AGE<br/>
+kubernetes-bootcamp   1/1     1            1           11m<br/>
+We should have 1 Pod. If not, run the command again. This shows:NAME lists the names of the Deployments in the cluster.READY shows the ratio of CURRENT/DESIRED replicasUP-TO-DATE displays the number of replicas that have been updated to achieve the desired state.AVAILABLE displays how many replicas of the application are available to your users.AGE displays the amount of time that the application has been running.To see the ReplicaSet created by the Deployment, run:kubectl get rs<br/>
+Notice that the name of the ReplicaSet is always formatted as<br/>
+[DEPLOYMENT-NAME]-[RANDOM-STRING].<br/>
+The random string is randomly generated and uses the pod-template-hash as a seed.Two important columns of this output are:DESIRED displays the desired number of replicas of the application, which you<br/>
+define when you create the Deployment. This is the desired state.CURRENT displays how many replicas are currently running.Next, let’s scale the Deployment to 4 replicas. We’ll use the kubectl scale command,<br/>
+followed by the Deployment type, name and desired number of instances:kubectl scale deployments/kubernetes-bootcamp --replicas=4<br/>
+To list your Deployments once again, use get deployments:kubectl get deployments<br/>
+The change was applied, and we have 4 instances of the application available. Next,<br/>
+let’s check if the number of Pods changed:kubectl get pods -o wide<br/>
+There are 4 Pods now, with different IP addresses. The change was registered in<br/>
+the Deployment events log. To check that, use the describe subcommand:kubectl describe deployments/kubernetes-bootcamp<br/>
+You can also view in the output of this command that there are 4 replicas now.Load BalancingLet's check that the Service is load-balancing the traffic. To find out the exposed<br/>
+IP and Port we can use describe service as we learned in the previous part of the tutorial:kubectl describe services/kubernetes-bootcamp<br/>
+Create an environment variable called NODE_PORT that has a value as the Node port:export NODE_PORT="$(kubectl get services/kubernetes-bootcamp -o go-template='{{(index .spec.ports 0).nodePort}}')"<br/>
+echo NODE_PORT=$NODE_PORT<br/>
+Next, we’ll do a curl to the exposed IP address and port. Execute the command multiple times:curl http://"$(minikube ip):$NODE_PORT"<br/>
+We hit a different Pod with every request. This demonstrates that the load-balancing is working.The output should be similar to:Hello Kubernetes bootcamp! | Running on: kubernetes-bootcamp-644c5687f4-wp67j | v=1<br/>
+Hello Kubernetes bootcamp! | Running on: kubernetes-bootcamp-644c5687f4-hs9dj | v=1<br/>
+Hello Kubernetes bootcamp! | Running on: kubernetes-bootcamp-644c5687f4-4hjvf | v=1<br/>
+Hello Kubernetes bootcamp! | Running on: kubernetes-bootcamp-644c5687f4-wp67j | v=1<br/>
+Hello Kubernetes bootcamp! | Running on: kubernetes-bootcamp-644c5687f4-4hjvf | v=1<br/>
+Note:If you're running minikube with Docker Desktop as the container driver, a minikube<br/>
+tunnel is needed. This is because containers inside Docker Desktop are isolated<br/>
+from your host computer.In a separate terminal window, execute:minikube service kubernetes-bootcamp --url<br/>
+The output looks like this:http://127.0.0.1:51082<br/>
+!  Because you are using a Docker driver on darwin, the terminal needs to be open to run it.<br/>
+Then use the given URL to access the app:curl 127.0.0.1:51082<br/>
+Scale DownTo scale down the Deployment to 2 replicas, run again the scale subcommand:kubectl scale deployments/kubernetes-bootcamp --replicas=2<br/>
+List the Deployments to check if the change was applied with the get deployments subcommand:kubectl get deployments<br/>
+The number of replicas decreased to 2. List the number of Pods, with get pods:kubectl get pods -o wide<br/>
+This confirms that 2 Pods were terminated.What's nextTutorial<br/>
+Performing a Rolling Update.Learn more about ReplicaSet.Learn more about Autoscaling.FeedbackWas this page helpful?Yes<br/>
+NoThanks for the feedback. If you have a specific, answerable question about how to use Kubernetes, ask it on<br/>
+Stack Overflow.<br/>
+Open an issue in the GitHub Repository if you want to<br/>
+report a problem<br/>
+or<br/>
+suggest an improvement.Last modified March 12, 2026 at 3:33 PM PST: Clarify POSIX shell wording in prerequisites (5d98744874)</p>
+</body>
+</html>

@@ -1,0 +1,76 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# uv
+.python-version
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Logs
+*.log
+logs/
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+
+# Linting
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Eval results
+eval/results/
+
+# Seed / generated data
+seed/data/
+seed/*.csv
+seed/*.json
+seed/*.pdf
+seed/*.docx
+seed/docs/noisy_data/*
+!seed/docs/noisy_data/.gitkeep
+
+# Docker
+*.override.yml
+
+# Secrets / keys
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
