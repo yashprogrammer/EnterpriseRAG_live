@@ -15,5 +15,5 @@ async def query(
 ) -> ChatResponse:
     return run_rag(
         body.question,
-        flags={"top_k": body.top_k, "search_mode": body.search_mode},
+        flags={"top_k": body.top_k, "search_mode": body.search_mode, "enable_rerank": body.enable_rerank,},
     )
