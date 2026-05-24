@@ -40,12 +40,18 @@ class RetrievedChunkPreview(BaseModel):
 class ResponseMetadata(BaseModel):
     route: str = "rag"
     retrieved_chunks: list[RetrievedChunkPreview] = Field(default_factory=list)
+    reflection_iterations: int = 0
+    reflection_score: float | None = None
+    refined_question: str | None = None
+
+    
 
 class ChatResponse(BaseModel):
     answer: str = Field(..., min_length=0)
     sources: list[str] = Field(default_factory=list)
     confidence: float = Field(..., ge=0.0, le=1.0)
     metadata: ResponseMetadata = Field(default_factory=ResponseMetadata)
+
 
 class QueryRequest(BaseModel):
     question: str = Field(
@@ -59,6 +65,7 @@ class QueryRequest(BaseModel):
     enable_hyde: bool = False
     search_mode: Literal["dense", "sparse", "hybrid"] = "dense"
     enable_crag: bool = True
+    enable_self_reflective: bool = False
 
     @field_validator("question")
     @classmethod
@@ -92,4 +99,12 @@ class CRAGEvaluation(BaseModel):
     relevance_score: float = 0.0
     relevance_label: str = "" 
     confidence: float = 0.0
+    reasoning: str = ""
+
+class ReflectionResult(BaseModel):
+    """Self-RAG reflection on a generated answer."""
+
+    reflection_score: float = 0.0
+    needs_regeneration: bool = False
+    refined_question: str = ""
     reasoning: str = ""
