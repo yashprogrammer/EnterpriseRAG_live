@@ -40,6 +40,7 @@ class RetrievedChunkPreview(BaseModel):
 class ResponseMetadata(BaseModel):
     route: str = "rag"
     retrieved_chunks: list[RetrievedChunkPreview] = Field(default_factory=list)
+    cache_hit: bool = False
     reflection_iterations: int = 0
     reflection_score: float | None = None
     refined_question: str | None = None
@@ -116,4 +117,3 @@ class ReflectionResult(BaseModel):
     needs_regeneration: bool = False
     refined_question: str = ""
     reasoning: str = ""
-

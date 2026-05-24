@@ -224,6 +224,7 @@ def run_rag(question: str, flags: dict | int | None = None) -> ChatResponse:
     if cached is not None:
         resp = ChatResponse(**cached)
         resp.cache_hit = True  # set on the schema (added in L8)
+        resp.metadata.cache_hit = True
         return resp
 
     intent = classify_intent(question)
