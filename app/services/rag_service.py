@@ -11,6 +11,7 @@ from app.models import (
 )
 from app.security.spotlighting import build_spotlighted_context
 from app.security.system_prompt import build_system_prompt
+from app.services.crag import crag_pipeline
 from app.services.embedding_service import embed_texts
 from app.services.reranking import Reranker
 from app.services.llm_service import generate
@@ -33,10 +34,11 @@ def _flag(flags: dict | None, key: str, default):
 
 
 def _retrieve(question: str, flags: dict | None = None) -> list[RetrievedChunk]:
-    final_top_k =int(_flag(flags, "top_k", 5))
+    final_top_k = int(_flag(flags, "top_k", 5))
     mode = _flag(flags, "search_mode", "dense")
     rerank = bool(_flag(flags, "enable_rerank", False))
     hyde = bool(_flag(flags, "enable_hyde", False))
+    enable_crag = bool(_flag(flags, "enable_crag", settings.crag_enabled_by_default))
 
     retrieve_k = settings.reranker_initial_top_k if rerank else final_top_k
 
@@ -56,6 +58,20 @@ def _retrieve(question: str, flags: dict | None = None) -> list[RetrievedChunk]:
         chunks = Reranker().rerank(question, chunks, top_k=final_top_k)
     else:
         chunks = chunks[:final_top_k]
+
+    # CRAG: grade chunks + fall back to web search if irrelevant
+    chunks, evaluation, used_web = crag_pipeline(
+        question=question,
+        chunks=chunks,
+        enable_crag=enable_crag,
+    )
+    logger.info(
+        "CRAG | enabled={} score={} label={} used_web={}",
+        enable_crag,
+        evaluation.relevance_score,
+        evaluation.relevance_label,
+        used_web,
+    )
 
     return chunks
 
@@ -82,10 +98,11 @@ def _generate(question: str, chunks: list[RetrievedChunk]) -> ChatResponse:
 
 def run_rag(question: str, flags: dict | int | None = None) -> ChatResponse:
     logger.info(
-        "L4 RAG | mode={} rerank={} hyde={} top_k={}",
+        "L5 RAG | mode={} rerank={} hyde={} crag={} top_k={}",
         _flag(flags, "search_mode", "dense"),
         _flag(flags, "enable_rerank", False),
         _flag(flags, "enable_hyde", False),
+        _flag(flags, "enable_crag", settings.crag_enabled_by_default),
         int(_flag(flags, "top_k", 5)),
     )
     chunks = _retrieve(question, flags=flags if isinstance(flags, dict) else None)

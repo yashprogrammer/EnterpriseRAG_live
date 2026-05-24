@@ -20,5 +20,6 @@ async def query(
             "search_mode": body.search_mode,
             "enable_rerank": body.enable_rerank,
             "enable_hyde": body.enable_hyde,
+            "enable_crag": body.enable_crag,
         },
     )
