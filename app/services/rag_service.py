@@ -20,6 +20,7 @@ from app.services.self_reflective import reflect_on_answer, should_regenerate
 from app.services.hyde import HyDERetriever
 from app.services.router_service import classify_intent
 from app.services.sql_service import SQLService
+from app.services.query_cache_service import query_cache
 
 
 
@@ -216,9 +217,18 @@ def _run_hybrid_inline(
 
 
 def run_rag(question: str, flags: dict | int | None = None) -> ChatResponse:
+    cache_ctx = (
+        _cache_context(flags) if isinstance(flags, dict) else _cache_context(None)
+    )
+    cached = query_cache.get_rag_answer(question, cache_ctx)
+    if cached is not None:
+        resp = ChatResponse(**cached)
+        resp.cache_hit = True  # set on the schema (added in L8)
+        return resp
+
     intent = classify_intent(question)
     logger.info(
-        "L7 query | intent={} mode={} rerank={} hyde={} crag={} self_rag={} top_k={}",
+        "L8 query | intent={} mode={} rerank={} hyde={} crag={} self_rag={} top_k={}",
         intent,
         _flag(flags, "search_mode", "dense"),
         _flag(flags, "enable_rerank", False),
@@ -228,13 +238,29 @@ def run_rag(question: str, flags: dict | int | None = None) -> ChatResponse:
         int(_flag(flags, "top_k", 5)),
     )
     if intent == "sql":
-        return _run_sql_inline(question)
-    if intent == "hybrid":
-        response, _ = _run_hybrid_inline(question, flags if isinstance(flags, dict) else None)
-        return response
-    # default: rag
-    chunks = _retrieve(question, flags=flags if isinstance(flags, dict) else None)
-    return _generate(question, chunks, flags=flags if isinstance(flags, dict) else None)
+        response = _run_sql_inline(question)
+    elif intent == "hybrid":
+        response, _ = _run_hybrid_inline(
+            question, flags if isinstance(flags, dict) else None
+        )
+    else:
+        chunks = _retrieve(question, flags=flags if isinstance(flags, dict) else None)
+        response = _generate(question, chunks, flags=flags if isinstance(flags, dict) else None)
+
+    query_cache.set_rag_answer(question, response.model_dump(), cache_ctx)
+    return response
+
+
+def _cache_context(flags: dict | None) -> dict:
+    return {
+        "search_mode": _flag(flags, "search_mode", "dense"),
+        "enable_hyde": bool(_flag(flags, "enable_hyde", False)),
+        "enable_rerank": bool(_flag(flags, "enable_rerank", False)),
+        "enable_crag": bool(_flag(flags, "enable_crag", settings.crag_enabled_by_default)),
+        "enable_self_reflective": bool(_flag(flags, "enable_self_reflective", False)),
+        "top_k": int(_flag(flags, "top_k", 5)),
+    }
+
 
 
 

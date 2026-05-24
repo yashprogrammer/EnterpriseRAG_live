@@ -56,6 +56,8 @@ class ChatResponse(BaseModel):
     sources: list[str] = Field(default_factory=list)
     confidence: float = Field(..., ge=0.0, le=1.0)
     pending_sql: PendingSQLBlock | None = None
+    cache_hit: bool = False
+    cost_saved: str = "$0.00"
     metadata: ResponseMetadata = Field(default_factory=ResponseMetadata)
 
 
