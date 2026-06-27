@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -167,6 +169,27 @@ USE_CASES: dict[str, dict[str, Any]] = {
 }
 
 SEARCH_MODE_EMOJI = {"dense": "🧠", "sparse": "📝", "hybrid": "⚡"}
+
+# Eval profiles — must mirror the keys in eval/profiles.py::PROFILES
+EVAL_PROFILES: list[str] = [
+    "naive",
+    "sparse_only",
+    "hybrid",
+    "hybrid+rerank",
+    "hybrid+rerank+hyde",
+    "hybrid+rerank+crag",
+    "all",
+]
+
+# Optional --filter values (golden `demonstrates_feature`); "— all goldens —" = no filter
+EVAL_FILTERS: list[str | None] = [
+    None,
+    "hyde",
+    "rerank",
+    "crag",
+    "self_reflective",
+    "sql",
+]
 
 # ---------------------------------------------------------------------------
 # Lesson / feature detection
@@ -990,10 +1013,144 @@ def _row_status(row: dict) -> str:
     return "❌ Fail"
 
 
+def _run_eval_subprocess(profile: str, filter_feature: str | None) -> tuple[int, str]:
+    """Launch `python -m eval.run_ragas --profile <profile>` as a subprocess and
+    stream its combined stdout/stderr live into the page.
+
+    Runs with the *same* interpreter/venv that launched Streamlit (so all app
+    deps + .env config resolve identically to the API) and with cwd at the repo
+    root, so the runner writes `eval/results/<ts>_<profile>.json` where the
+    dashboard already looks for it.
+
+    Returns (returncode, full_log_text).
+    """
+    cmd = [sys.executable, "-m", "eval.run_ragas", "--profile", profile]
+    if filter_feature:
+        cmd += ["--filter", filter_feature]
+
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"  # ensure we see output line-by-line, not buffered
+
+    log_lines: list[str] = []
+    log_box = st.empty()
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(_REPO_ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=env,
+        )
+    except Exception as exc:  # e.g. interpreter/module not found
+        return 1, f"Failed to start eval process: {exc}"
+
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        log_lines.append(line.rstrip("\n"))
+        # Keep the live view bounded so very long runs don't bloat the DOM.
+        log_box.code("\n".join(log_lines[-400:]) or "…", language="text")
+    returncode = proc.wait()
+    return returncode, "\n".join(log_lines)
+
+
+def _eval_runner_section() -> None:
+    """Trigger a fresh evaluation run from the dashboard and watch it stream."""
+    # Surface the outcome of a run that finished on the previous rerun.
+    finished = st.session_state.pop("eval_run_finished", None)
+    if finished:
+        if finished.get("ok"):
+            st.success(
+                f"✅ Eval run completed — profile `{finished['profile']}`. "
+                "The new result file is selected below.",
+                icon="✅",
+            )
+        else:
+            st.error(
+                f"❌ Eval run failed (exit code {finished.get('code')}). "
+                "Expand the log below for details.",
+                icon="❌",
+            )
+            with st.expander("Show failed run log", expanded=False):
+                st.code(finished.get("log", "") or "(no output)", language="text")
+
+    with st.expander("🚀 Run a new evaluation", expanded=not _list_eval_files()):
+        st.caption(
+            "Runs `python -m eval.run_ragas` in service mode (in-process, no API "
+            "server required). A run hits the real LLM / embedding / vector services, "
+            "so it can take several minutes and the dashboard is busy until it finishes."
+        )
+
+        c1, c2 = st.columns([2, 2])
+        with c1:
+            profile = st.selectbox(
+                "Profile",
+                EVAL_PROFILES,
+                index=0,
+                key="eval_run_profile",
+                help="Feature flag profile to evaluate (mirrors eval/profiles.py).",
+            )
+        with c2:
+            filter_feature = st.selectbox(
+                "Filter goldens (optional)",
+                EVAL_FILTERS,
+                index=0,
+                format_func=lambda f: "— all goldens —" if f is None else f,
+                key="eval_run_filter",
+                help="Only run goldens whose demonstrates_feature matches (baseline "
+                     "goldens are always included).",
+            )
+
+        running = st.session_state.get("eval_run_active", False)
+        start = st.button(
+            "▶️ Run Evaluation",
+            type="primary",
+            use_container_width=True,
+            disabled=running,
+            key="eval_run_start",
+        )
+
+        if start:
+            st.session_state["eval_run_active"] = True
+            label = f"Running eval · profile={profile}" + (
+                f" · filter={filter_feature}" if filter_feature else ""
+            )
+            with st.status(label, expanded=True) as status:
+                st.write(f"`$ {sys.executable} -m eval.run_ragas --profile {profile}"
+                         + (f" --filter {filter_feature}`" if filter_feature else "`"))
+                code, log = _run_eval_subprocess(profile, filter_feature)
+                if code == 0:
+                    status.update(label="✅ Eval run complete", state="complete")
+                else:
+                    status.update(
+                        label=f"❌ Eval run failed (exit {code})", state="error"
+                    )
+
+            st.session_state["eval_run_active"] = False
+            st.session_state["eval_run_finished"] = {
+                "ok": code == 0,
+                "code": code,
+                "profile": profile,
+                "log": log,
+            }
+            # Reset the result-file selector so the freshly written run (newest by
+            # mtime → index 0) becomes the default selection after the rerun.
+            st.session_state.pop("eval_latest_select", None)
+            st.rerun()
+
+    st.markdown("---")
+
+
 def _eval_dashboard_section() -> None:
     """Golden-centric Eval Dashboard — view goldens, pick a result file,
     optionally compare to a previous run."""
     st.header("📊 Evaluation Results")
+
+    # Trigger + live progress for new runs (writes into eval/results/).
+    _eval_runner_section()
+
     st.caption(
         "Browse every golden question + its score in any eval result file. "
         "Latest run is the default; switch to compare against earlier runs."
