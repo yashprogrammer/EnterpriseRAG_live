@@ -7,3 +7,7 @@ app.include_router(admin.router)
 app.include_router(auth.router)
 app.include_router(query.router)
 
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}

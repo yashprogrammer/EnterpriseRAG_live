@@ -1284,7 +1284,7 @@ def main() -> None:
         initial_sidebar_state="expanded",
     )
 
-    default_url = "http://localhost:8000"
+    default_url = os.getenv("API_BASE_URL", "http://localhost:8000")
     base_url = _sidebar(default_url)
 
     # Detect lesson features (cached 60 s)

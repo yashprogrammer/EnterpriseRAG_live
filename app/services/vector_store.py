@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from hashlib import sha256
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
@@ -8,9 +9,8 @@ from qdrant_client.models import Distance, PointStruct, VectorParams
 from app.config import settings
 from app.models import RetrievedChunk
 
-
-
 VECTOR_SIZE = 1536
+POINT_NAMESPACE = uuid.UUID("2cb5a766-8df9-49ca-a1e5-3bca6f2f2bd3")
 
 
 def get_client() -> QdrantClient:
@@ -31,11 +31,16 @@ def upsert_chunks(chunks: list[RetrievedChunk], embeddings: list[list[float]]) -
     client  = get_client()
     points = [
         PointStruct(
-            id=str(uuid.uuid4()),
+            id=str(
+                uuid.uuid5(
+                    POINT_NAMESPACE,
+                    f"{chunk.source}:{idx}:{sha256(chunk.text.encode()).hexdigest()}",
+                )
+            ),
             vector=embedding,
-            payload={"text": chunk.text, "source": chunk.source},
+            payload={"text": chunk.text, "source": chunk.source, "chunk_index": idx},
         )
-        for chunk, embedding in zip(chunks, embeddings, strict=True)
+        for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings, strict=True))
     ]
     client.upsert(collection_name=settings.qdrant_collection, points=points)
 
@@ -50,8 +55,8 @@ def search(query_embedding: list[float], top_k: int = 5) -> list[RetrievedChunk]
 
     return [
         RetrievedChunk(
-            text=p.payload.get("text", ""),
-            source=p.payload.get("source", ""),
+            text=(p.payload or {}).get("text", ""),
+            source=(p.payload or {}).get("source", ""),
             score=float(p.score),
         )
         for p in results

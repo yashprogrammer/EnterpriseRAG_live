@@ -73,3 +73,6 @@ seed/docs/noisy_data/*
 *.p12
 *.pfx
 secrets/
+
+# Local AWS deployment render/state files
+.aws/

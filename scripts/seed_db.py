@@ -9,8 +9,6 @@ from loguru import logger
 
 from app.middleware.auth import hash_password
 
-
-
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/adv_rag")
 MIGRATIONS_DIR = os.path.join(os.path.dirname(__file__), "..", "seed", "migrations")
 DOCS_DIR = os.path.join(os.path.dirname(__file__), "..", "seed", "docs")
@@ -36,7 +34,38 @@ def _collect_files(subdir: str) -> list[Path]:
         and p.name != ".gitkeep"
     )
 
-def _select_corpus(noise_sample_size: int | str) -> tuple[list[Path], list[Path]]:
+def _size_mb(files: list[Path]) -> float:
+    return sum(p.stat().st_size for p in files) / 1024 / 1024
+
+
+def _select_noisy_by_size(files: list[Path], target_mb: int) -> list[Path]:
+    if target_mb <= 0:
+        return []
+
+    limit_bytes = target_mb * 1024 * 1024
+    rng = random.Random(SAMPLE_SEED)
+    candidates = files[:]
+    rng.shuffle(candidates)
+
+    selected: list[Path] = []
+    selected_bytes = 0
+    for src in candidates:
+        size = src.stat().st_size
+        if size > limit_bytes and not selected:
+            selected.append(src)
+            break
+        if selected_bytes + size <= limit_bytes:
+            selected.append(src)
+            selected_bytes += size
+
+    return sorted(selected)
+
+
+def _select_corpus(
+    noise_sample_size: int | str,
+    noise_size_mb: int | None = None,
+    include_true: bool = True,
+) -> tuple[list[Path], list[Path]]:
     true_files = _collect_files("true_data")
     all_noisy = _collect_files("noisy_data")
 
@@ -50,40 +79,52 @@ def _select_corpus(noise_sample_size: int | str) -> tuple[list[Path], list[Path]
     if legacy_files:
         logger.info("Found {} legacy top-level docs (treating as true signal)", len(legacy_files))
 
-    true_files = legacy_files + true_files
+    true_files = legacy_files + true_files if include_true else []
 
-    if noise_sample_size == "all":
+    if noise_size_mb is not None:
+        noisy_files = _select_noisy_by_size(all_noisy, noise_size_mb)
+    elif noise_sample_size == "all":
         noisy_files = all_noisy
     else:
         n = int(noise_sample_size)
         if n <= 0 or n >= len(all_noisy):
             noisy_files = all_noisy if n > 0 else []
 
-        else: 
+        else:
             rng = random.Random(SAMPLE_SEED)
             noisy_files = rng.sample(all_noisy, n)
             noisy_files.sort()
     return true_files, noisy_files
 
 
-def seed_docs(noise_sample_size: int | str = 150) -> dict:
+def seed_docs(
+    noise_sample_size: int | str = 150,
+    noise_size_mb: int | None = None,
+    include_true: bool = True,
+) -> dict:
     from app.models import RetrievedChunk
     from app.services.document_processor import DocumentProcessor
     from app.services.embedding_service import embed_texts
     from app.services.vector_store import upsert_chunks
 
     processor = DocumentProcessor()
-    true_files, noisy_files = _select_corpus(noise_sample_size)
+    true_files, noisy_files = _select_corpus(noise_sample_size, noise_size_mb, include_true)
     total = len(true_files) + len(noisy_files)
+    sample_label = f"{noise_size_mb} MB" if noise_size_mb is not None else str(noise_sample_size)
 
     logger.info("=" * 60)
     logger.info("INGESTION PLAN")
     logger.info("  true_data  : {} files (full signal)", len(true_files))
-    logger.info("  noisy_data : {} files (sample={})", len(noisy_files), noise_sample_size)
+    logger.info(
+        "  noisy_data : {} files, {:.1f} MB (sample={})",
+        len(noisy_files),
+        _size_mb(noisy_files),
+        sample_label,
+    )
     logger.info("  total      : {} files", total)
     logger.info("=" * 60)
 
-    
+
     if total == 0:
         logger.warning("No files found to ingest — did you run `make seed-data`?")
         return {"true_ingested": 0, "noisy_ingested": 0, "failed": 0, "chunks": 0}
@@ -133,7 +174,15 @@ def _ingest_one(processor, src: Path, idx: int, total: int, counters: dict,
             logger.info("  [{}/{}] progress — {} chunks so far",idx, total, counters["chunks"])
 
     except Exception as exc:  # noqa: BLE001
-        logger.warning("[{}/{}] FAILED {} {}: {}", idx, total, label, src.name, type(exc).__name__)
+        logger.warning(
+            "[{}/{}] FAILED {} {}: {} {}",
+            idx,
+            total,
+            label,
+            src.name,
+            type(exc).__name__,
+            repr(exc),
+        )
         counters["failed"] += 1
 
 
@@ -175,7 +224,18 @@ def main() -> None:
     )
     parser.add_argument(
         "--noise-sample", default="150",
-        help="Number of noisy docs to sample (default 150). Use 0 or 'all'.",
+        help="Number of noisy docs to sample (default 150). Use 0 or 'all'. Ignored when --noise-size-mb is set.",
+    )
+    parser.add_argument(
+        "--noise-size-mb",
+        type=int,
+        default=None,
+        help="Approximate noisy corpus size to ingest in MB, selected reproducibly by file size.",
+    )
+    parser.add_argument(
+        "--skip-true",
+        action="store_true",
+        help="Skip true_data ingestion; useful when adding noisy docs to an already-seeded corpus.",
     )
     args = parser.parse_args()
 
@@ -198,9 +258,13 @@ def main() -> None:
         try:
             noise_arg = int(noise_arg)
         except ValueError:
-            raise SystemExit(f"--noise-sample must be int or 'all', got {noise_arg!r}")
+            raise SystemExit(f"--noise-sample must be int or 'all', got {noise_arg!r}") from None
 
-    seed_docs(noise_sample_size=noise_arg)
+    seed_docs(
+        noise_sample_size=noise_arg,
+        noise_size_mb=args.noise_size_mb,
+        include_true=not args.skip_true,
+    )
 
 if __name__ == "__main__":
     main()

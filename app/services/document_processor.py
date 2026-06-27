@@ -1,18 +1,54 @@
+import os
 from pathlib import Path
 
 from docling.chunking import HybridChunker
 from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
 from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.datamodel.pipeline_options import PdfPipelineOptions, RapidOcrOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from loguru import logger
+
+
+def _accelerator_device() -> AcceleratorDevice:
+    configured = os.getenv("DOCLING_ACCELERATOR", "cpu").strip().lower()
+    devices = {
+        "auto": AcceleratorDevice.AUTO,
+        "cpu": AcceleratorDevice.CPU,
+        "cuda": AcceleratorDevice.CUDA,
+        "mps": AcceleratorDevice.MPS,
+        "xpu": AcceleratorDevice.XPU,
+    }
+    if configured not in devices:
+        logger.warning("Unknown DOCLING_ACCELERATOR={!r}; falling back to cpu", configured)
+    return devices.get(configured, AcceleratorDevice.CPU)
+
 
 class DocumentProcessor:
     def __init__(self):
         pipeline_options = PdfPipelineOptions()
         pipeline_options.accelerator_options = AcceleratorOptions(
-            num_threads=8, device=AcceleratorDevice.MPS
+            num_threads=8, device=_accelerator_device()
         )
+        rapidocr_path = os.getenv("DOCLING_RAPIDOCR_PATH")
+        if rapidocr_path:
+            rapidocr_root = Path(rapidocr_path)
+            pipeline_options.ocr_options = RapidOcrOptions(
+                backend="torch",
+                lang=["english"],
+                det_model_path=str(
+                    rapidocr_root / "torch/PP-OCRv4/det/en_PP-OCRv3_det_mobile.pth"
+                ),
+                cls_model_path=str(
+                    rapidocr_root / "torch/PP-OCRv4/cls/ch_ptocr_mobile_v2.0_cls_mobile.pth"
+                ),
+                rec_model_path=str(
+                    rapidocr_root / "torch/PP-OCRv4/rec/en_PP-OCRv4_rec_mobile.pth"
+                ),
+                rec_keys_path=str(
+                    rapidocr_root / "paddle/PP-OCRv4/rec/en_PP-OCRv4_rec_mobile/en_dict.txt"
+                ),
+                font_path=str(rapidocr_root / "resources/fonts/FZYTK.TTF"),
+            )
         self.converter = DocumentConverter(
             format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
         )
@@ -35,5 +71,3 @@ class DocumentProcessor:
             chunks.append(meta)
         logger.info("Processed {} chunks from {}", len(chunks), file_path)
         return chunks
-
-                

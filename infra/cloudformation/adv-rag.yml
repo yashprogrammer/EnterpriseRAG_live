@@ -1,0 +1,825 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: EnterpriseRAG ECS Fargate deployment with EFS, ALB, Secrets Manager, and GitHub OIDC.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: adv-rag
+  AppImage:
+    Type: String
+    Description: Full ECR image URI for the app container.
+  UiImage:
+    Type: String
+    Description: Full ECR image URI for the Streamlit UI container.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  PublicSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Public subnets for the ALB and Fargate task ENIs.
+  EfsMountSubnet1:
+    Type: AWS::EC2::Subnet::Id
+  EfsMountSubnet2:
+    Type: AWS::EC2::Subnet::Id
+  EfsMountSubnet3:
+    Type: AWS::EC2::Subnet::Id
+  DesiredCount:
+    Type: Number
+    Default: 1
+    MinValue: 0
+  Cpu:
+    Type: String
+    Default: "2048"
+  Memory:
+    Type: String
+    Default: "8192"
+  OpenAIApiKey:
+    Type: String
+    NoEcho: true
+  TavilyApiKey:
+    Type: String
+    NoEcho: true
+  UpstashRedisUrl:
+    Type: String
+    NoEcho: true
+  UpstashRedisToken:
+    Type: String
+    NoEcho: true
+  JwtSecret:
+    Type: String
+    NoEcho: true
+  PostgresPassword:
+    Type: String
+    NoEcho: true
+  GitHubRepo:
+    Type: String
+    Default: yashprogrammer/EnterpriseRAG_live
+  CreateGitHubOidcProvider:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+
+Conditions:
+  ShouldCreateGitHubOidcProvider: !Equals [!Ref CreateGitHubOidcProvider, "true"]
+
+Resources:
+  OpenAISecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProjectName}/openai-api-key"
+      SecretString: !Ref OpenAIApiKey
+
+  TavilySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProjectName}/tavily-api-key"
+      SecretString: !Ref TavilyApiKey
+
+  UpstashRedisUrlSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProjectName}/upstash-redis-url"
+      SecretString: !Ref UpstashRedisUrl
+
+  UpstashRedisTokenSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProjectName}/upstash-redis-token"
+      SecretString: !Ref UpstashRedisToken
+
+  JwtSecretValue:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProjectName}/jwt-secret"
+      SecretString: !Ref JwtSecret
+
+  PostgresPasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProjectName}/postgres-password"
+      SecretString: !Ref PostgresPassword
+
+  DatabaseUrlSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProjectName}/database-url"
+      SecretString: !Sub "postgresql://postgres:${PostgresPassword}@localhost:5432/adv_rag"
+
+  CorpusBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-${AWS::AccountId}-${AWS::Region}-corpus"
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${ProjectName}-app"
+      RetentionInDays: 14
+
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${ProjectName}-alb-sg"
+      GroupDescription: EnterpriseRAG ALB
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${ProjectName}-task-sg"
+      GroupDescription: EnterpriseRAG Fargate task
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 8501
+          ToPort: 8501
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+
+  QdrantIngressFromTasks:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref TaskSecurityGroup
+      IpProtocol: tcp
+      FromPort: 6333
+      ToPort: 6333
+      SourceSecurityGroupId: !Ref TaskSecurityGroup
+
+  EfsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${ProjectName}-efs-sg"
+      GroupDescription: EnterpriseRAG EFS
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref TaskSecurityGroup
+
+  FileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+      FileSystemTags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-efs"
+
+  EfsMountTarget1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Ref EfsMountSubnet1
+      SecurityGroups: [!Ref EfsSecurityGroup]
+
+  EfsMountTarget2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Ref EfsMountSubnet2
+      SecurityGroups: [!Ref EfsSecurityGroup]
+
+  EfsMountTarget3:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Ref EfsMountSubnet3
+      SecurityGroups: [!Ref EfsSecurityGroup]
+
+  QdrantAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref FileSystem
+      PosixUser:
+        Uid: "1000"
+        Gid: "1000"
+      RootDirectory:
+        Path: /qdrant-data
+        CreationInfo:
+          OwnerUid: "1000"
+          OwnerGid: "1000"
+          Permissions: "0755"
+
+  PostgresAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref FileSystem
+      PosixUser:
+        Uid: "999"
+        Gid: "999"
+      RootDirectory:
+        Path: /postgres-data
+        CreationInfo:
+          OwnerUid: "999"
+          OwnerGid: "999"
+          Permissions: "0700"
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${ProjectName}-alb"
+      Type: application
+      Scheme: internet-facing
+      SecurityGroups: [!Ref AlbSecurityGroup]
+      Subnets: !Ref PublicSubnetIds
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: "300"
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${ProjectName}-tg"
+      Protocol: HTTP
+      Port: 8000
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Matcher:
+        HttpCode: "200"
+
+  UiTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${ProjectName}-ui-tg"
+      Protocol: HTTP
+      Port: 8501
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Matcher:
+        HttpCode: "200-399"
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref UiTargetGroup
+
+  ApiListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref Listener
+      Priority: 10
+      Conditions:
+        - Field: path-pattern
+          PathPatternConfig:
+            Values:
+              - /admin/*
+              - /auth/*
+              - /query*
+              - /documents/*
+              - /health
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  ApiDocsListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref Listener
+      Priority: 11
+      Conditions:
+        - Field: path-pattern
+          PathPatternConfig:
+            Values:
+              - /docs
+              - /docs/*
+              - /redoc
+              - /redoc/*
+              - /openapi.json
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "${ProjectName}-cluster"
+
+  ServiceDiscoveryNamespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Name: !Sub "${ProjectName}.local"
+      Vpc: !Ref VpcId
+
+  QdrantDiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: qdrant
+      NamespaceId: !Ref ServiceDiscoveryNamespace
+      DnsConfig:
+        RoutingPolicy: MULTIVALUE
+        DnsRecords:
+          - Type: A
+            TTL: 10
+      HealthCheckCustomConfig:
+        FailureThreshold: 1
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-ecs-task-execution"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: secrets-read
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref OpenAISecret
+                  - !Ref TavilySecret
+                  - !Ref UpstashRedisUrlSecret
+                  - !Ref UpstashRedisTokenSecret
+                  - !Ref JwtSecretValue
+                  - !Ref PostgresPasswordSecret
+                  - !Ref DatabaseUrlSecret
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-ecs-task-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: runtime
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssmmessages:CreateControlChannel
+                  - ssmmessages:CreateDataChannel
+                  - ssmmessages:OpenControlChannel
+                  - ssmmessages:OpenDataChannel
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - elasticfilesystem:ClientMount
+                  - elasticfilesystem:ClientWrite
+                Resource: !GetAtt FileSystem.Arn
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt CorpusBucket.Arn
+                  - !Sub "${CorpusBucket.Arn}/*"
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    DependsOn:
+      - EfsMountTarget1
+      - EfsMountTarget2
+      - EfsMountTarget3
+    Properties:
+      Family: !Sub "${ProjectName}-app"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      Cpu: !Ref Cpu
+      Memory: !Ref Memory
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      Volumes:
+        - Name: postgres-data
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref FileSystem
+            TransitEncryption: ENABLED
+            AuthorizationConfig:
+              AccessPointId: !Ref PostgresAccessPoint
+              IAM: ENABLED
+      ContainerDefinitions:
+        - Name: postgres
+          Image: postgres:16
+          Essential: true
+          Environment:
+            - Name: POSTGRES_USER
+              Value: postgres
+            - Name: POSTGRES_DB
+              Value: adv_rag
+            - Name: PGDATA
+              Value: /var/lib/postgresql/data/pgdata
+          Secrets:
+            - Name: POSTGRES_PASSWORD
+              ValueFrom: !Ref PostgresPasswordSecret
+          MountPoints:
+            - SourceVolume: postgres-data
+              ContainerPath: /var/lib/postgresql/data
+              ReadOnly: false
+          HealthCheck:
+            Command: [CMD-SHELL, "pg_isready -U postgres"]
+            Interval: 10
+            Timeout: 5
+            Retries: 6
+            StartPeriod: 30
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: postgres
+        - Name: app
+          Image: !Ref AppImage
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8000
+              Protocol: tcp
+          DependsOn:
+            - ContainerName: postgres
+              Condition: HEALTHY
+          Environment:
+            - Name: PYTHONPATH
+              Value: /app
+            - Name: QDRANT_URL
+              Value: !Sub "http://qdrant.${ProjectName}.local:6333"
+            - Name: STORAGE_BACKEND
+              Value: local
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: LOG_JSON
+              Value: "true"
+            - Name: LOG_LEVEL
+              Value: INFO
+            - Name: REFLECTION_MIN_SCORE
+              Value: "0.85"
+            - Name: MAX_REFLECTION_RETRIES
+              Value: "2"
+          Secrets:
+            - Name: OPENAI_API_KEY
+              ValueFrom: !Ref OpenAISecret
+            - Name: TAVILY_API_KEY
+              ValueFrom: !Ref TavilySecret
+            - Name: JWT_SECRET
+              ValueFrom: !Ref JwtSecretValue
+            - Name: UPSTASH_REDIS_URL
+              ValueFrom: !Ref UpstashRedisUrlSecret
+            - Name: UPSTASH_REDIS_TOKEN
+              ValueFrom: !Ref UpstashRedisTokenSecret
+            - Name: DATABASE_URL
+              ValueFrom: !Ref DatabaseUrlSecret
+          HealthCheck:
+            Command: [CMD-SHELL, "curl -fsS http://localhost:8000/health || exit 1"]
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: app
+
+  QdrantTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    DependsOn:
+      - EfsMountTarget1
+      - EfsMountTarget2
+      - EfsMountTarget3
+    Properties:
+      Family: !Sub "${ProjectName}-qdrant"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      Cpu: "1024"
+      Memory: "2048"
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      Volumes:
+        - Name: qdrant-data
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref FileSystem
+            TransitEncryption: ENABLED
+            AuthorizationConfig:
+              AccessPointId: !Ref QdrantAccessPoint
+              IAM: ENABLED
+      ContainerDefinitions:
+        - Name: qdrant
+          Image: qdrant/qdrant:v1.17.0
+          Essential: true
+          PortMappings:
+            - ContainerPort: 6333
+              Protocol: tcp
+          MountPoints:
+            - SourceVolume: qdrant-data
+              ContainerPath: /qdrant/storage
+              ReadOnly: false
+          HealthCheck:
+            Command: [CMD-SHELL, "bash -c 'echo -n > /dev/tcp/localhost/6333'"]
+            Interval: 10
+            Timeout: 5
+            Retries: 10
+            StartPeriod: 30
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: qdrant
+
+  QdrantService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub "${ProjectName}-qdrant"
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref QdrantTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups: [!Ref TaskSecurityGroup]
+          Subnets:
+            - !Ref EfsMountSubnet1
+            - !Ref EfsMountSubnet2
+            - !Ref EfsMountSubnet3
+      ServiceRegistries:
+        - RegistryArn: !GetAtt QdrantDiscoveryService.Arn
+          ContainerName: qdrant
+
+  EcsService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - Listener
+      - QdrantService
+    Properties:
+      ServiceName: !Sub "${ProjectName}-app"
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      EnableExecuteCommand: true
+      HealthCheckGracePeriodSeconds: 180
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups: [!Ref TaskSecurityGroup]
+          Subnets:
+            - !Ref EfsMountSubnet1
+            - !Ref EfsMountSubnet2
+            - !Ref EfsMountSubnet3
+      LoadBalancers:
+        - TargetGroupArn: !Ref TargetGroup
+          ContainerName: app
+          ContainerPort: 8000
+
+  IngestTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ProjectName}-ingest"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      Cpu: "4096"
+      Memory: "16384"
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: ingest
+          Image: !Ref AppImage
+          Essential: true
+          Command:
+            - python
+            - scripts/ingest_s3.py
+            - --bucket
+            - !Ref CorpusBucket
+            - --prefix
+            - noisy_data/
+            - --size-mb
+            - "200"
+          Environment:
+            - Name: PYTHONPATH
+              Value: /app
+            - Name: QDRANT_URL
+              Value: !Sub "http://qdrant.${ProjectName}.local:6333"
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: LOG_JSON
+              Value: "true"
+            - Name: LOG_LEVEL
+              Value: INFO
+            - Name: CORPUS_BUCKET
+              Value: !Ref CorpusBucket
+          Secrets:
+            - Name: OPENAI_API_KEY
+              ValueFrom: !Ref OpenAISecret
+            - Name: UPSTASH_REDIS_URL
+              ValueFrom: !Ref UpstashRedisUrlSecret
+            - Name: UPSTASH_REDIS_TOKEN
+              ValueFrom: !Ref UpstashRedisTokenSecret
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ingest
+
+  UiTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ProjectName}-ui"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      Cpu: "512"
+      Memory: "1024"
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: ui
+          Image: !Ref UiImage
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8501
+              Protocol: tcp
+          Environment:
+            - Name: API_BASE_URL
+              Value: !Sub "http://${LoadBalancer.DNSName}"
+          HealthCheck:
+            Command: [CMD-SHELL, "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8501/\", timeout=5)'"]
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 30
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ui
+
+  UiService:
+    Type: AWS::ECS::Service
+    DependsOn: Listener
+    Properties:
+      ServiceName: !Sub "${ProjectName}-ui"
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref UiTaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      HealthCheckGracePeriodSeconds: 120
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups: [!Ref TaskSecurityGroup]
+          Subnets:
+            - !Ref EfsMountSubnet1
+            - !Ref EfsMountSubnet2
+            - !Ref EfsMountSubnet3
+      LoadBalancers:
+        - TargetGroupArn: !Ref UiTargetGroup
+          ContainerName: ui
+          ContainerPort: 8501
+
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: ShouldCreateGitHubOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+      ThumbprintList: [6938fd4d98bab03faadb97b34396831e3780aea1]
+
+  GitHubDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-github-deployer"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub "arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubRepo}:ref:refs/heads/main"
+      Policies:
+        - PolicyName: deploy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:CompleteLayerUpload
+                  - ecr:DescribeRepositories
+                  - ecr:GetAuthorizationToken
+                  - ecr:InitiateLayerUpload
+                  - ecr:PutImage
+                  - ecr:UploadLayerPart
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStacks
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:GetTemplate
+                  - cloudformation:UpdateStack
+                  - cloudformation:ValidateTemplate
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ecs:DescribeServices
+                  - ecs:DescribeTaskDefinition
+                  - ecs:ListTasks
+                Resource: "*"
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource:
+                  - !GetAtt ExecutionRole.Arn
+                  - !GetAtt TaskRole.Arn
+              - Effect: Allow
+                Action:
+                  - elasticloadbalancing:DescribeLoadBalancers
+                  - elasticloadbalancing:DescribeTargetGroups
+                Resource: "*"
+
+Outputs:
+  ClusterName:
+    Value: !Ref EcsCluster
+  ServiceName:
+    Value: !Sub "${ProjectName}-app"
+  UiServiceName:
+    Value: !Sub "${ProjectName}-ui"
+  QdrantServiceName:
+    Value: !Sub "${ProjectName}-qdrant"
+  TaskFamily:
+    Value: !Sub "${ProjectName}-app"
+  UiTaskFamily:
+    Value: !Sub "${ProjectName}-ui"
+  IngestTaskFamily:
+    Value: !Sub "${ProjectName}-ingest"
+  CorpusBucketName:
+    Value: !Ref CorpusBucket
+  QdrantUrl:
+    Value: !Sub "http://qdrant.${ProjectName}.local:6333"
+  LoadBalancerDns:
+    Value: !GetAtt LoadBalancer.DNSName
+  UiUrl:
+    Value: !Sub "http://${LoadBalancer.DNSName}"
+  TargetGroupArn:
+    Value: !Ref TargetGroup
+  UiTargetGroupArn:
+    Value: !Ref UiTargetGroup
+  GitHubDeployRoleArn:
+    Value: !GetAtt GitHubDeployRole.Arn
+  FileSystemId:
+    Value: !Ref FileSystem
+  QdrantAccessPointId:
+    Value: !Ref QdrantAccessPoint
+  PostgresAccessPointId:
+    Value: !Ref PostgresAccessPoint

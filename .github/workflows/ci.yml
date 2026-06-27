@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: uv pip install --system -e ".[dev]"
+      - name: Ruff
+        run: ruff check app/main.py scripts/serve.py
+      - name: Mypy
+        run: mypy app/main.py
+      - name: AWS script syntax
+        run: bash -n scripts/aws/*.sh

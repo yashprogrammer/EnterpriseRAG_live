@@ -1,0 +1,86 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPO: adv-rag/app
+  UI_ECR_REPO: adv-rag/ui
+  STACK_NAME: adv-rag-cfn-prod
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ECR_URI="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO"
+          UI_ECR_URI="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$UI_ECR_REPO"
+          SHA="${GITHUB_SHA::7}"
+          docker build -t "$ECR_URI:$SHA" -t "$ECR_URI:latest" .
+          docker push "$ECR_URI:$SHA"
+          docker push "$ECR_URI:latest"
+          docker build -f Dockerfile.streamlit -t "$UI_ECR_URI:$SHA" -t "$UI_ECR_URI:latest" .
+          docker push "$UI_ECR_URI:$SHA"
+          docker push "$UI_ECR_URI:latest"
+          echo "APP_IMAGE=$ECR_URI:$SHA" >> "$GITHUB_ENV"
+          echo "UI_IMAGE=$UI_ECR_URI:$SHA" >> "$GITHUB_ENV"
+
+      - name: Update CloudFormation stack image
+        run: |
+          aws cloudformation deploy \
+            --stack-name "$STACK_NAME" \
+            --template-file infra/cloudformation/adv-rag.yml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --region "$AWS_REGION" \
+            --parameter-overrides AppImage="$APP_IMAGE" UiImage="$UI_IMAGE"
+          CLUSTER=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey=='ClusterName'].OutputValue | [0]" \
+            --output text \
+            --region "$AWS_REGION")
+          SERVICE=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey=='ServiceName'].OutputValue | [0]" \
+            --output text \
+            --region "$AWS_REGION")
+          aws ecs wait services-stable \
+            --cluster "$CLUSTER" \
+            --services "$SERVICE" \
+            --region "$AWS_REGION"
+
+      - name: Smoke test
+        run: |
+          ALB_DNS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey=='LoadBalancerDns'].OutputValue | [0]" \
+            --output text \
+            --region "$AWS_REGION")
+          for path in /health /admin/health; do
+            for attempt in 1 2 3 4 5; do
+              if curl -fsS "http://$ALB_DNS$path"; then
+                break
+              fi
+              if [ "$attempt" = 5 ]; then
+                exit 1
+              fi
+              sleep 15
+            done
+          done
