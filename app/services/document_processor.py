@@ -8,8 +8,9 @@ from docling.document_converter import DocumentConverter, PdfFormatOption
 from loguru import logger
 
 class DocumentProcessor:
-    def __init__(self):
+    def __init__(self, do_ocr: bool = True):
         pipeline_options = PdfPipelineOptions()
+        pipeline_options.do_ocr = do_ocr
         pipeline_options.accelerator_options = AcceleratorOptions(
             num_threads=8, device=AcceleratorDevice.MPS
         )
