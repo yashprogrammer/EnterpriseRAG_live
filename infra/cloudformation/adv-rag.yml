@@ -784,12 +784,13 @@ Resources:
                   - ecs:UpdateService
                 Resource: "*"
               - Effect: Allow
-                Action:
-                  - iam:PassRole
-                  - iam:GetRole
+                Action: iam:PassRole
                 Resource:
                   - !GetAtt ExecutionRole.Arn
                   - !GetAtt TaskRole.Arn
+              - Effect: Allow
+                Action: iam:GetRole
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ProjectName}-*"
               - Effect: Allow
                 Action:
                   - ec2:DescribeSubnets
