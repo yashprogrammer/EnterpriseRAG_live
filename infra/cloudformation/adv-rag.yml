@@ -784,7 +784,9 @@ Resources:
                   - ecs:UpdateService
                 Resource: "*"
               - Effect: Allow
-                Action: iam:PassRole
+                Action:
+                  - iam:PassRole
+                  - iam:GetRole
                 Resource:
                   - !GetAtt ExecutionRole.Arn
                   - !GetAtt TaskRole.Arn
