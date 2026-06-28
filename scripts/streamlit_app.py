@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import requests
 import streamlit as st
 
@@ -1002,15 +1003,44 @@ def _row_status(row: dict) -> str:
     ragas = row.get("ragas_metrics") or {}
     faith = ragas.get("faithfulness") or 0
     ans_rel = ragas.get("answer_relevancy") or 0
+    precision = ragas.get("context_precision") or 0
+    recall = ragas.get("context_recall") or 0
+    source_overlap = (row.get("source_overlap") or {}).get("overlap_pct") or 0
     forbidden_ok = (row.get("forbidden_check") or {}).get("passed", True)
     if not forbidden_ok:
         return "❌ forbidden"
-    score = max(faith, ans_rel)  # be lenient for SQL goldens where one of the two is null
-    if score >= 0.7:
+    quality_ok = faith >= 0.7 and ans_rel >= 0.7
+    retrieval_ok = recall >= 0.5 or precision >= 0.5 or source_overlap >= 0.5
+    if quality_ok and retrieval_ok:
         return "✅ Pass"
-    if score >= 0.4:
+    if max(faith, ans_rel, precision, recall, source_overlap) >= 0.4:
         return "🟡 Partial"
     return "❌ Fail"
+
+
+_EVAL_METRIC_COLUMNS = ["Faith", "Prec", "Recall", "Ans Rel"]
+
+
+def _eval_metric_value(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+    try:
+        return float(value.split(" ", 1)[0])
+    except ValueError:
+        return None
+
+
+def _eval_metric_cell_style(value: Any) -> str:
+    score = _eval_metric_value(value)
+    if score is None:
+        return "color: #94a3b8;"
+    if score < 0.50:
+        return "background-color: #3f151d; color: #fecdd3; font-weight: 700;"
+    if score < 0.85:
+        return "background-color: #3a2a0a; color: #fde68a; font-weight: 700;"
+    return "background-color: #10351f; color: #bbf7d0; font-weight: 700;"
 
 
 def _run_eval_subprocess(profile: str, filter_feature: str | None) -> tuple[int, str]:
@@ -1307,8 +1337,24 @@ def _eval_dashboard_section() -> None:
                 "Ans Rel": "—",
             })
 
-    st.caption(f"Showing **{len(table_rows)}** goldens.")
-    st.dataframe(table_rows, use_container_width=True, hide_index=True, height=420)
+    st.caption(
+        f"Showing **{len(table_rows)}** goldens. "
+        "Metric cells: red < 0.50, amber 0.50–0.84, green ≥ 0.85."
+    )
+    results_df = pd.DataFrame(table_rows)
+    if results_df.empty:
+        st.dataframe(results_df, use_container_width=True, hide_index=True, height=420)
+    else:
+        styled_results = results_df.style.map(
+            _eval_metric_cell_style,
+            subset=[c for c in _EVAL_METRIC_COLUMNS if c in results_df.columns],
+        )
+        st.dataframe(
+            styled_results,
+            use_container_width=True,
+            hide_index=True,
+            height=420,
+        )
 
     # -------------------------------------------------------------------------
     # Drill-down — full detail for one golden
