@@ -770,14 +770,18 @@ Resources:
                   - cloudformation:DescribeStacks
                   - cloudformation:ExecuteChangeSet
                   - cloudformation:GetTemplate
+                  - cloudformation:GetTemplateSummary
                   - cloudformation:UpdateStack
                   - cloudformation:ValidateTemplate
                 Resource: "*"
               - Effect: Allow
                 Action:
+                  - ecs:DeregisterTaskDefinition
                   - ecs:DescribeServices
                   - ecs:DescribeTaskDefinition
                   - ecs:ListTasks
+                  - ecs:RegisterTaskDefinition
+                  - ecs:UpdateService
                 Resource: "*"
               - Effect: Allow
                 Action: iam:PassRole
