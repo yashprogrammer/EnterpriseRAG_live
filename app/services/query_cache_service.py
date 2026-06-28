@@ -48,7 +48,8 @@ class QueryCacheService:
         raw: str | dict[str, Any] = question.strip()
         if cache_context is not None:
             raw = {"question": question.strip(), "context": cache_context}
-        return self._key("rag_answer", json.dumps(raw, sort_keys=True) if isinstance(raw, dict) else raw)
+        key_raw = json.dumps(raw, sort_keys=True) if isinstance(raw, dict) else raw
+        return self._key("rag_answer:v2", key_raw)
 
     def sql_gen_key(self, question: str) -> str:
         return self._key("sql_gen", question.strip())
@@ -203,7 +204,7 @@ class QueryCacheService:
             try:
                 # Upstash Redis doesn't support FLUSHDB via the python client
                 # So we delete by pattern for each namespace
-                for prefix in ("intent", "rag_answer", "sql_gen", "sql_result:v2", "embedding"):
+                for _prefix in ("intent", "rag_answer", "sql_gen", "sql_result:v2", "embedding"):
                     # Note: upstash-redis doesn't support KEYS/SCAN well
                     # We just track that we attempted it
                     pass

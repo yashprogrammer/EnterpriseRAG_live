@@ -21,6 +21,11 @@ DEMO_USERS = [
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".html", ".htm", ".txt", ".md"}
 SAMPLE_SEED = 42
 
+# Files to never ingest (too large / not worth the OCR cost).
+EXCLUDE_FILES = {
+    "AMD64 Architecture Programmer's Manual - Volume 5 - 64-Bit Media and x87 Floating-point Instructions (26569, r3.13, May-2013).pdf",
+}
+
 
 
 def _collect_files(subdir: str) -> list[Path]:
@@ -32,37 +37,35 @@ def _collect_files(subdir: str) -> list[Path]:
         if p.is_file()
         and p.suffix.lower() in SUPPORTED_EXTENSIONS
         and p.name != ".gitkeep"
+        and p.name not in EXCLUDE_FILES
     )
 
-def _size_mb(files: list[Path]) -> float:
-    return sum(p.stat().st_size for p in files) / 1024 / 1024
+
+def _dir_size_mb(files: list[Path]) -> float:
+    return sum(p.stat().st_size for p in files) / (1024 * 1024)
 
 
-def _select_noisy_by_size(files: list[Path], target_mb: int) -> list[Path]:
-    if target_mb <= 0:
-        return []
-
-    limit_bytes = target_mb * 1024 * 1024
+def _select_noisy_by_size(all_noisy: list[Path], budget_mb: float) -> list[Path]:
+    """Deterministically pack noisy files until cumulative size reaches budget_mb."""
+    budget_bytes = budget_mb * 1024 * 1024
     rng = random.Random(SAMPLE_SEED)
-    candidates = files[:]
-    rng.shuffle(candidates)
+    shuffled = all_noisy[:]
+    rng.shuffle(shuffled)
 
     selected: list[Path] = []
-    selected_bytes = 0
-    for src in candidates:
-        size = src.stat().st_size
-        if size > limit_bytes and not selected:
-            selected.append(src)
+    total = 0
+    for p in shuffled:
+        if total >= budget_bytes:
             break
-        if selected_bytes + size <= limit_bytes:
-            selected.append(src)
-            selected_bytes += size
-
-    return sorted(selected)
+        selected.append(p)
+        total += p.stat().st_size
+    selected.sort()
+    return selected
 
 
 def _select_corpus(
     noise_sample_size: int | str,
+    target_mb: float | None = None,
     noise_size_mb: int | None = None,
     include_true: bool = True,
 ) -> tuple[list[Path], list[Path]]:
@@ -81,6 +84,18 @@ def _select_corpus(
 
     true_files = legacy_files + true_files if include_true else []
 
+    # Total-size-budget mode: always keep ALL clean data, fill noisy up to target_mb total.
+    if target_mb is not None:
+        true_mb = _dir_size_mb(true_files)
+        noisy_budget_mb = max(0.0, target_mb - true_mb)
+        logger.info(
+            "Size budget: target={:.0f} MB, clean={:.1f} MB (all kept), noisy budget={:.1f} MB",
+            target_mb, true_mb, noisy_budget_mb,
+        )
+        noisy_files = _select_noisy_by_size(all_noisy, noisy_budget_mb)
+        return true_files, noisy_files
+
+    # Noisy-only size-budget mode.
     if noise_size_mb is not None:
         noisy_files = _select_noisy_by_size(all_noisy, noise_size_mb)
     elif noise_sample_size == "all":
@@ -97,31 +112,77 @@ def _select_corpus(
     return true_files, noisy_files
 
 
+def _existing_sources() -> set[str]:
+    """Return the set of `source` basenames already present in the Qdrant collection."""
+    from app.config import settings
+    from app.services.vector_store import get_client
+
+    client = get_client()
+    existing = {c.name for c in client.get_collections().collections}
+    if settings.qdrant_collection not in existing:
+        return set()
+
+    sources: set[str] = set()
+    offset = None
+    while True:
+        points, offset = client.scroll(
+            collection_name=settings.qdrant_collection,
+            limit=1000,
+            with_payload=["source"],
+            with_vectors=False,
+            offset=offset,
+        )
+        for p in points:
+            if p.payload and p.payload.get("source"):
+                sources.add(p.payload["source"])
+        if offset is None:
+            break
+    return sources
+
+
 def seed_docs(
     noise_sample_size: int | str = 150,
+    target_mb: float | None = None,
     noise_size_mb: int | None = None,
     include_true: bool = True,
+    skip_existing: bool = False,
+    do_ocr: bool = True,
 ) -> dict:
     from app.models import RetrievedChunk
     from app.services.document_processor import DocumentProcessor
     from app.services.embedding_service import embed_texts
     from app.services.vector_store import upsert_chunks
 
-    processor = DocumentProcessor()
-    true_files, noisy_files = _select_corpus(noise_sample_size, noise_size_mb, include_true)
-    total = len(true_files) + len(noisy_files)
-    sample_label = f"{noise_size_mb} MB" if noise_size_mb is not None else str(noise_sample_size)
+    if not do_ocr:
+        logger.info("OCR DISABLED — extracting embedded text only (fast; ideal for noise docs)")
+    processor = DocumentProcessor(do_ocr=do_ocr)
+    true_files, noisy_files = _select_corpus(
+        noise_sample_size, target_mb, noise_size_mb, include_true
+    )
 
+    done: set[str] = set()
+    if skip_existing:
+        done = _existing_sources()
+        before_t, before_n = len(true_files), len(noisy_files)
+        true_files = [f for f in true_files if f.name not in done]
+        noisy_files = [f for f in noisy_files if f.name not in done]
+        logger.info(
+            "RESUME: {} sources already in Qdrant → skipping {} clean + {} noisy already-done files",
+            len(done), before_t - len(true_files), before_n - len(noisy_files),
+        )
+
+    total = len(true_files) + len(noisy_files)
+
+    noisy_label = (
+        f"{_dir_size_mb(noisy_files):.1f} MB"
+        if (target_mb or noise_size_mb)
+        else f"sample={noise_sample_size}"
+    )
     logger.info("=" * 60)
     logger.info("INGESTION PLAN")
-    logger.info("  true_data  : {} files (full signal)", len(true_files))
-    logger.info(
-        "  noisy_data : {} files, {:.1f} MB (sample={})",
-        len(noisy_files),
-        _size_mb(noisy_files),
-        sample_label,
-    )
-    logger.info("  total      : {} files", total)
+    logger.info("  true_data  : {} files ({:.1f} MB, full signal)", len(true_files), _dir_size_mb(true_files))
+    logger.info("  noisy_data : {} files ({})", len(noisy_files), noisy_label)
+    logger.info("  total      : {} files ({:.1f} MB)", total, _dir_size_mb(true_files + noisy_files))
     logger.info("=" * 60)
 
 
@@ -175,13 +236,8 @@ def _ingest_one(processor, src: Path, idx: int, total: int, counters: dict,
 
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "[{}/{}] FAILED {} {}: {} {}",
-            idx,
-            total,
-            label,
-            src.name,
-            type(exc).__name__,
-            repr(exc),
+            "[{}/{}] FAILED {} {}: {}: {} (module={})",
+            idx, total, label, src.name, type(exc).__name__, exc, type(exc).__module__,
         )
         counters["failed"] += 1
 
@@ -224,7 +280,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--noise-sample", default="150",
-        help="Number of noisy docs to sample (default 150). Use 0 or 'all'. Ignored when --noise-size-mb is set.",
+        help="Number of noisy docs to sample (default 150). Use 0 or 'all'. Ignored when --noise-size-mb or --target-mb is set.",
     )
     parser.add_argument(
         "--noise-size-mb",
@@ -236,6 +292,19 @@ def main() -> None:
         "--skip-true",
         action="store_true",
         help="Skip true_data ingestion; useful when adding noisy docs to an already-seeded corpus.",
+    )
+    parser.add_argument(
+        "--target-mb", default=None, type=float,
+        help="Total corpus size budget in MB. Ingests ALL clean data, then fills "
+             "noisy data up to this total. Overrides --noise-sample/--noise-size-mb when set.",
+    )
+    parser.add_argument(
+        "--skip-existing", action="store_true",
+        help="Resume mode: skip files whose source is already in Qdrant (idempotent).",
+    )
+    parser.add_argument(
+        "--no-ocr", action="store_true",
+        help="Disable OCR (extract embedded text only). Much faster; ideal for noise docs.",
     )
     args = parser.parse_args()
 
@@ -262,8 +331,11 @@ def main() -> None:
 
     seed_docs(
         noise_sample_size=noise_arg,
+        target_mb=args.target_mb,
         noise_size_mb=args.noise_size_mb,
         include_true=not args.skip_true,
+        skip_existing=args.skip_existing,
+        do_ocr=not args.no_ocr,
     )
 
 if __name__ == "__main__":

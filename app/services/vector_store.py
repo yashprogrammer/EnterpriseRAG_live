@@ -26,6 +26,9 @@ def ensure_collection() -> None:
             vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
         )
 
+UPSERT_BATCH_SIZE = 128
+
+
 def upsert_chunks(chunks: list[RetrievedChunk], embeddings: list[list[float]]) -> None:
     ensure_collection()
     client  = get_client()
@@ -42,7 +45,11 @@ def upsert_chunks(chunks: list[RetrievedChunk], embeddings: list[list[float]]) -
         )
         for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings, strict=True))
     ]
-    client.upsert(collection_name=settings.qdrant_collection, points=points)
+    # Batch upserts so large documents don't exceed Qdrant's request-size limit
+    # (a single request with thousands of points returns 400 Bad Request).
+    for start in range(0, len(points), UPSERT_BATCH_SIZE):
+        batch = points[start:start + UPSERT_BATCH_SIZE]
+        client.upsert(collection_name=settings.qdrant_collection, points=batch)
 
 def search(query_embedding: list[float], top_k: int = 5) -> list[RetrievedChunk]:
     client = get_client()

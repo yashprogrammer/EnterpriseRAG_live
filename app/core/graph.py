@@ -17,7 +17,6 @@ from app.services.rag_service import run_rag
 from app.services.router_service import classify_intent
 from app.services.sql_service import SQLService
 
-
 sql_service = SQLService()
 
 
@@ -86,7 +85,7 @@ def execute_sql(state: GraphState) -> dict:
     if not state.get("sql_approved"):
         return {"sql_rows": [], "final_answer": "SQL query was not approved."}
 
-    sql = state.get("generated_sql", "")
+    sql = state.get("generated_sql") or ""
     try:
         rows = sql_service.execute_sql(sql)
         return {"sql_rows": rows}
@@ -105,12 +104,14 @@ def generate_answer(state: GraphState) -> dict:
                 "final_answer": state.get("final_answer", "No results."),
                 "sources": ["database query"],
                 "confidence": 0.9,
+                "metadata": {"route": "sql"},
             }
         answer = f"Query results:\n```\n{_safe_json_dumps(rows, indent=2)}\n```"
         return {
             "final_answer": answer,
             "sources": ["database query"],
             "confidence": 0.9,
+            "metadata": {"route": "sql"},
         }
 
     if intent == "hybrid":
@@ -156,6 +157,7 @@ def _generate_hybrid_answer(state: GraphState) -> dict:
         "final_answer": result["text"],
         "sources": ["database query"] + state.get("retrieved_chunks", []),
         "confidence": 0.85,
+        "metadata": {"route": "hybrid"},
     }
 
 def finalize(state: GraphState) -> dict:

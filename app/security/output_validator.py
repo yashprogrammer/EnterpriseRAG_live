@@ -20,6 +20,12 @@ def _strip_markdown_fences(text: str) -> str:
     return text
 
 
+def parse_chat_response(raw_str: str) -> ChatResponse:
+    cleaned = _strip_markdown_fences(raw_str)
+    data = json.loads(cleaned)
+    return ChatResponse(**data)
+
+
 def validate_with_retry(raw_str: str, llm_fn, max_retries: int | None = None) -> ChatResponse:
     if max_retries is None:
         max_retries = settings.max_validation_retries
@@ -30,8 +36,7 @@ def validate_with_retry(raw_str: str, llm_fn, max_retries: int | None = None) ->
     for attempt in range(max_retries + 1):
         cleaned = _strip_markdown_fences(current)
         try:
-            data = json.loads(cleaned)
-            return ChatResponse(**data)
+            return parse_chat_response(cleaned)
         except (json.JSONDecodeError, ValidationError) as exc:
             last_error = str(exc)
             if attempt < max_retries:
