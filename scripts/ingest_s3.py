@@ -120,7 +120,7 @@ def ingest_s3(
                     RetrievedChunk(text=chunk["text"], source=f"s3://{bucket}/{key}")
                     for chunk in chunks_meta
                 ]
-                embeddings = embed_texts([chunk.text for chunk in chunks])
+                embeddings = embed_texts([chunk.text for chunk in chunks], use_cache=False)
                 upsert_chunks(chunks, embeddings)
                 counters["ingested"] += 1
                 counters["chunks"] += len(chunks)

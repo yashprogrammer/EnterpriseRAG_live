@@ -793,6 +793,12 @@ Resources:
                 Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ProjectName}-*"
               - Effect: Allow
                 Action:
+                  - iam:GetRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ProjectName}-github-deployer"
+              - Effect: Allow
+                Action:
                   - ec2:DescribeSubnets
                   - ec2:DescribeVpcs
                   - elasticloadbalancing:DescribeLoadBalancers
