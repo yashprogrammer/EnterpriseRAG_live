@@ -790,6 +790,8 @@ Resources:
                   - !GetAtt TaskRole.Arn
               - Effect: Allow
                 Action:
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeVpcs
                   - elasticloadbalancing:DescribeLoadBalancers
                   - elasticloadbalancing:DescribeTargetGroups
                 Resource: "*"
