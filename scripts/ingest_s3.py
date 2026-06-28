@@ -72,6 +72,7 @@ def ingest_s3(
     seed: int,
     shard_index: int = 0,
     shard_count: int = 1,
+    do_ocr: bool = True,
 ) -> dict[str, int]:
     objects = _iter_objects(bucket, prefix)
     selected = _select_by_size(objects, size_mb, seed)
@@ -98,7 +99,9 @@ def ingest_s3(
     if not selected:
         return counters
 
-    processor = DocumentProcessor()
+    if not do_ocr:
+        logger.info("OCR DISABLED — extracting embedded text only (fast path)")
+    processor = DocumentProcessor(do_ocr=do_ocr)
     t0 = time.time()
     tmp_root = Path(tempfile.mkdtemp(prefix="adv-rag-s3-ingest-"))
     try:
@@ -162,9 +165,16 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=SAMPLE_SEED)
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--shard-count", type=int, default=1)
+    parser.add_argument(
+        "--no-ocr", action="store_true",
+        help="Disable OCR (extract embedded text only). Much faster; ideal for noise docs.",
+    )
     args = parser.parse_args()
 
-    ingest_s3(args.bucket, args.prefix, args.size_mb, args.seed, args.shard_index, args.shard_count)
+    ingest_s3(
+        args.bucket, args.prefix, args.size_mb, args.seed,
+        args.shard_index, args.shard_count, do_ocr=not args.no_ocr,
+    )
 
 
 if __name__ == "__main__":

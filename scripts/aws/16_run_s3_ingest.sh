@@ -43,7 +43,8 @@ for ((i = 0; i < PARALLELISM; i++)); do
       --arg size "$SIZE_MB" \
       --arg shard_index "$i" \
       --arg shard_count "$PARALLELISM" \
-      '{containerOverrides:[{name:"ingest",command:["python","scripts/ingest_s3.py","--bucket",$bucket,"--prefix",$prefix,"--size-mb",$size,"--shard-index",$shard_index,"--shard-count",$shard_count]}]}')" \
+      --arg noocr "${NO_OCR:-0}" \
+      '{containerOverrides:[{name:"ingest",command:(["python","scripts/ingest_s3.py","--bucket",$bucket,"--prefix",$prefix,"--size-mb",$size,"--shard-index",$shard_index,"--shard-count",$shard_count] + (if $noocr=="1" then ["--no-ocr"] else [] end))}]}')" \
     --region "$AWS_REGION" \
     --query 'tasks[0].taskArn' \
     --output text)"
